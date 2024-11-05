@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package gofdbrecordlayer.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/endocrimes/protoc-gen-go-fdb/api/gofdbrecordlayer/v1";
+
+message MessageOptions {
+  // List of field names that constitute the primary key
+  repeated string primary_key = 1;
+
+  // List of secondary indexes that should be generated
+  repeated SecondaryIndex secondary_indexes = 2;
+}
+
+message SecondaryIndex {
+  // List of fields that make up the index
+  repeated string fields = 1;
+
+  // Unique indicates whether the index should be unique
+  bool unique = 2;
+}
+
+extend google.protobuf.MessageOptions {
+  MessageOptions options = 50000;
+}
