@@ -210,72 +210,92 @@ func joinFieldNames(fields []Field) string {
 const fdbTemplate = `package {{.GoPackageName}}
 
 import (
-    "context"
-    "fmt"
+		"context"
+		"fmt"
 
-    "github.com/apple/foundationdb/bindings/go/src/fdb"
+		"github.com/apple/foundationdb/bindings/go/src/fdb"
 		"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-    "github.com/apple/foundationdb/bindings/go/src/fdb/directory"
+		"github.com/apple/foundationdb/bindings/go/src/fdb/directory"
 		"google.golang.org/protobuf/proto"
 )
 
 type {{.Name}}Store struct {
-    db  fdb.Database
-    dir directory.DirectorySubspace
+		db  fdb.Database
+		dir directory.DirectorySubspace
 }
 
 func New{{.Name}}Store(db fdb.Database) (*{{.Name}}Store, error) {
-    dir, err := directory.CreateOrOpen(db, []string{"gorecords", "{{.Name}}"}, nil)
-    if err != nil {
-        return nil, err
-    }
-    return &{{.Name}}Store{db: db, dir: dir}, nil
+		dir, err := directory.CreateOrOpen(db, []string{"gorecords", "{{.Name}}"}, nil)
+		if err != nil {
+				return nil, err
+		}
+		return &{{.Name}}Store{db: db, dir: dir}, nil
+}
+
+func (store *{{.Name}}Store) GetAll(ctx context.Context, tr fdb.ReadTransaction) ([]*{{.Name}}, error) {
+		kvs, err := tr.GetRange(store.dir, fdb.RangeOptions{}).GetSliceWithError()
+		if err != nil {
+			return nil, err
+		}
+
+		results := make([]*{{.Name}}, 0, len(kvs))
+
+		for _, kv := range kvs {
+			entity := &{{.Name}}{}
+			err = proto.Unmarshal(kv.Value, entity)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, entity)
+		}
+
+		return results, nil
 }
 
 func (store *{{.Name}}Store) Get(ctx context.Context, tr fdb.ReadTransaction, {{range $index, $element := .PrimaryKeyFields}}{{if $index}}, {{end}}{{.Name}} {{.Type}}{{end}}) (*{{.Name}}, error) {
-    var entity *{{.Name}}
+		var entity *{{.Name}}
 
-    key := store.dir.Pack(tuple.Tuple{ {{range .PrimaryKeyFields}} {{.Name}}, {{end}} })
-    value, err := tr.Get(key).Get()
+		key := store.dir.Pack(tuple.Tuple{ {{range .PrimaryKeyFields}} {{.Name}}, {{end}} })
+		value, err := tr.Get(key).Get()
 		if err != nil {
 				return nil, fmt.Errorf("failed to get value: %w", err)
 		}
-    if value == nil {
-        return nil, nil
-    }
-    entity = &{{.Name}}{}
-    err = proto.Unmarshal(value, entity)
-    if err != nil {
-        return nil, err
-    }
-    return entity, nil
+		if value == nil {
+				return nil, nil
+		}
+		entity = &{{.Name}}{}
+		err = proto.Unmarshal(value, entity)
+		if err != nil {
+				return nil, err
+		}
+		return entity, nil
 }
 
 func (store *{{.Name}}Store) Set(ctx context.Context, tr fdb.Transaction, entity *{{.Name}}) error {
-    key := store.dir.Pack(tuple.Tuple{ {{range .PrimaryKeyFields}} entity.{{.Name}}, {{end}} })
-    value, err := proto.Marshal(entity)
-    if err != nil {
-        return err
-    }
+		key := store.dir.Pack(tuple.Tuple{ {{range .PrimaryKeyFields}} entity.{{.Name}}, {{end}} })
+		value, err := proto.Marshal(entity)
+		if err != nil {
+				return err
+		}
 
-    {{range $idxIndex, $idx := .SecondaryIndexes}}
+		{{range $idxIndex, $idx := .SecondaryIndexes}}
 		// Setup {{joinFieldNames $idx.Fields}} index
-    indexKey {{if eq $idxIndex 0}}:{{end}}= store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{
-        {{range $i, $f := $idx.Fields}} entity.{{ $f.Name }}, {{end}}
-        {{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}
-    })
-    tr.Set(indexKey, []byte{})
+		indexKey {{if eq $idxIndex 0}}:{{end}}= store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{
+				{{range $i, $f := $idx.Fields}} entity.{{ $f.Name }}, {{end}}
+				{{if not $idx.Unique}}{{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}{{end}}
+		})
+		{{if $idx.Unique}}tr.Set(indexKey, key){{else}}tr.Set(indexKey, []byte{}){{end}}
 
-    {{end}}
+		{{end}}
 
 		// Set the primary key value
-    tr.Set(key, value)
+		tr.Set(key, value)
 
-    return nil
+		return nil
 }
 
 func (store *{{.Name}}Store) Delete(ctx context.Context, tr fdb.Transaction, {{range $index, $element := .PrimaryKeyFields}}{{if $index}}, {{end}}{{.Name}} {{.Type}}{{end}}) error {
-    key := store.dir.Pack(tuple.Tuple{ {{range .PrimaryKeyFields}} {{.Name}}, {{end}} })
+		key := store.dir.Pack(tuple.Tuple{ {{range .PrimaryKeyFields}} {{.Name}}, {{end}} })
 		value, err := tr.Get(key).Get()
 		if err != nil {
 			return err
@@ -284,21 +304,24 @@ func (store *{{.Name}}Store) Delete(ctx context.Context, tr fdb.Transaction, {{r
 			return nil
 		}
 
+		tr.Clear(key)
+
 		entity := &{{.Name}}{}
 		err = proto.Unmarshal(value, entity)
-		if err == nil {
-				{{range $idxIndex, $idx := .SecondaryIndexes}}
-				// Cleanup {{joinFieldNames $idx.Fields}} index
-				indexKey {{if eq $idxIndex 0 }}:{{end}}= store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{
-						{{range $i, $f := $idx.Fields}} entity.{{ $f.Name }}, {{end}}
-						{{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}
-				})
-				tr.Clear(indexKey)
-				{{end}}
+		if err != nil {
+			return nil
 		}
 
-    tr.Clear(key)
-    return nil
+		{{range $idxIndex, $idx := .SecondaryIndexes}}
+		// Cleanup {{joinFieldNames $idx.Fields}} index
+		indexKey {{if eq $idxIndex 0 }}:{{end}}= store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{
+				{{range $i, $f := $idx.Fields}} entity.{{ $f.Name }}, {{end}}
+				{{if not $idx.Unique }}{{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}{{end}}
+		})
+		tr.Clear(indexKey)
+		{{end}}
+
+		return nil
 }
 
 {{/* Generate GetBy functions for non-unique secondary indexes */}}
@@ -306,47 +329,47 @@ func (store *{{.Name}}Store) Delete(ctx context.Context, tr fdb.Transaction, {{r
 {{ if $idx.Unique }}
 {{ continue }}
 {{ end }}
-func (store *{{$.Name}}Store) GetBy{{joinFieldNames $idx.Fields}}(ctx context.Context, tr fdb.ReadTransaction, {{range $i, $f := $idx.Fields}}{{if $i}}, {{end}}{{$f.Name}} {{$f.Type}}{{end}}) ([]*{{$.Name}}, error) {
-    entities := []*{{$.Name}}{}
-    indexKeyPrefix := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{ {{range $i, $f := $idx.Fields}} {{$f.Name}}, {{end}} })
-    indexRange, err := fdb.PrefixRange(indexKeyPrefix)
+func (store *{{$.Name}}Store) GetManyBy{{joinFieldNames $idx.Fields}}(ctx context.Context, tr fdb.ReadTransaction, {{range $i, $f := $idx.Fields}}{{if $i}}, {{end}}{{$f.Name}} {{$f.Type}}{{end}}) ([]*{{$.Name}}, error) {
+		entities := []*{{$.Name}}{}
+		indexKeyPrefix := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{ {{range $i, $f := $idx.Fields}} {{$f.Name}}, {{end}} })
+		indexRange, err := fdb.PrefixRange(indexKeyPrefix)
 		if err != nil {
 			return nil, err
 		}
 
-    kvs, err := tr.GetRange(indexRange, fdb.RangeOptions{}).GetSliceWithError()
+		kvs, err := tr.GetRange(indexRange, fdb.RangeOptions{}).GetSliceWithError()
 		if err != nil {
 			return nil, err
 		}
 
-    for _, kv := range kvs {
-        indexTuple, err := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Unpack(kv.Key)
-        if err != nil {
-            return nil, err
-        }
+		for _, kv := range kvs {
+				indexTuple, err := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Unpack(kv.Key)
+				if err != nil {
+						return nil, err
+				}
 
-				// The index key layout is [(secondary index)(primary key)]
+				// The non-unique index key layout is [(secondary index)(primary key)]
 				// So unpack the key tuple and skip past the secondary index to get
 				// the primary key.
-        pkTuple := indexTuple[{{len $idx.Fields}}:]
-        key := store.dir.Pack(pkTuple)
+				pkTuple := indexTuple[{{len $idx.Fields}}:]
+				key := store.dir.Pack(pkTuple)
 				value, err := tr.Get(key).Get()
 				if err != nil {
 						return nil, fmt.Errorf("failed to get value: %w", err)
 				}
-        if value == nil {
-            continue
-        }
+				if value == nil {
+						continue
+				}
 
-        entity := &{{$.Name}}{}
-        err = proto.Unmarshal(value, entity)
-        if err != nil {
-            return nil, err
-        }
+				entity := &{{$.Name}}{}
+				err = proto.Unmarshal(value, entity)
+				if err != nil {
+						return nil, err
+				}
 
-        entities = append(entities, entity)
-    }
-    return entities, nil
+				entities = append(entities, entity)
+		}
+		return entities, nil
 }
 {{end}}
 
@@ -356,38 +379,17 @@ func (store *{{$.Name}}Store) GetBy{{joinFieldNames $idx.Fields}}(ctx context.Co
 {{ continue }}
 {{ end }}
 func (store *{{$.Name}}Store) GetBy{{joinFieldNames $idx.Fields}}(ctx context.Context, tr fdb.ReadTransaction, {{range $i, $f := $idx.Fields}}{{if $i}}, {{end}}{{$f.Name}} {{$f.Type}}{{end}}) (*{{$.Name}}, error) {
-    indexKeyPrefix := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{ {{range $i, $f := $idx.Fields}} {{$f.Name}}, {{end}} })
-    indexRange, err := fdb.PrefixRange(indexKeyPrefix)
+		key := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{ {{range $i, $f := $idx.Fields}} {{$f.Name}}, {{end}} })
+
+		pk, err := tr.Get(key).Get()
 		if err != nil {
-			return nil, err
+				return nil, fmt.Errorf("failed to get value: %w", err)
+		}
+		if pk == nil {
+				return nil, nil
 		}
 
-    kvs, err := tr.GetRange(indexRange, fdb.RangeOptions{}).GetSliceWithError()
-		if err != nil {
-			return nil, err
-		}
-
-		if len(kvs) == 0 {
-			return nil, nil
-		}
-
-		if len(kvs) > 1 {
-			return nil, fmt.Errorf("unexpected number of values for index, expected 1, got: %d", len(kvs))
-		}
-
-		kv := kvs[0]
-
-		indexTuple, err := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Unpack(kv.Key)
-		if err != nil {
-				return nil, err
-		}
-
-		// The index key layout is [(secondary index)(primary key)]
-		// So unpack the key tuple and skip past the secondary index to get
-		// the primary key.
-		pkTuple := indexTuple[{{len $idx.Fields}}:]
-		key := store.dir.Pack(pkTuple)
-		value, err := tr.Get(key).Get()
+		value, err := tr.Get(fdb.Key(pk)).Get()
 		if err != nil {
 				return nil, fmt.Errorf("failed to get value: %w", err)
 		}
@@ -395,7 +397,7 @@ func (store *{{$.Name}}Store) GetBy{{joinFieldNames $idx.Fields}}(ctx context.Co
 				return nil, nil
 		}
 
-    entity := &{{$.Name}}{}
+		entity := &{{$.Name}}{}
 		err = proto.Unmarshal(value, entity)
 		if err != nil {
 				return nil, err
