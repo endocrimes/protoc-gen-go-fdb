@@ -214,8 +214,8 @@ import (
 		"fmt"
 
 		"github.com/apple/foundationdb/bindings/go/src/fdb"
-		"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 		"github.com/apple/foundationdb/bindings/go/src/fdb/directory"
+		"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 		"google.golang.org/protobuf/proto"
 )
 
