@@ -61,6 +61,7 @@ func main() {
 		// Generate code for each message
 		tmpl := template.Must(template.New("fdb").Funcs(template.FuncMap{
 			"joinFieldNames": joinFieldNames,
+			"join":           strings.Join,
 		}).Parse(fdbTemplate))
 
 		for _, msg := range messages {
@@ -222,6 +223,9 @@ import (
 type {{.Name}}Store struct {
 		db  fdb.Database
 		dir directory.DirectorySubspace
+		{{range $idxIndex, $idx := .SecondaryIndexes}}
+		index{{joinFieldNames $idx.Fields}} directory.DirectorySubspace
+		{{end}}
 }
 
 func New{{.Name}}Store(db fdb.Database) (*{{.Name}}Store, error) {
@@ -229,7 +233,13 @@ func New{{.Name}}Store(db fdb.Database) (*{{.Name}}Store, error) {
 		if err != nil {
 				return nil, err
 		}
-		return &{{.Name}}Store{db: db, dir: dir}, nil
+		{{range $idxIndex, $idx := .SecondaryIndexes}}	
+		index{{joinFieldNames $idx.Fields}}, err := dir.CreateOrOpen(db, []string{"index" {{range $i, $k := $idx.Fields}} ,"{{$k.Name}}"{{end}} }, nil)
+		if err != nil {
+				return nil, err
+		}
+		{{end}}
+		return &{{.Name}}Store{db: db, dir: dir {{range $idxIndex, $idx := .SecondaryIndexes}}	,index{{joinFieldNames $idx.Fields}}: index{{joinFieldNames $idx.Fields}} {{end}}}, nil
 }
 
 func (store *{{.Name}}Store) GetAll(ctx context.Context, tr fdb.ReadTransaction) ([]*{{.Name}}, error) {
@@ -280,7 +290,7 @@ func (store *{{.Name}}Store) Set(ctx context.Context, tr fdb.Transaction, entity
 
 		{{range $idxIndex, $idx := .SecondaryIndexes}}
 		// Setup {{joinFieldNames $idx.Fields}} index
-		indexKey {{if eq $idxIndex 0}}:{{end}}= store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{
+		indexKey {{if eq $idxIndex 0}}:{{end}}= store.index{{joinFieldNames $idx.Fields}}.Pack(tuple.Tuple{
 				{{range $i, $f := $idx.Fields}} entity.{{ $f.Name }}, {{end}}
 				{{if not $idx.Unique}}{{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}{{end}}
 		})
@@ -314,7 +324,7 @@ func (store *{{.Name}}Store) Delete(ctx context.Context, tr fdb.Transaction, {{r
 
 		{{range $idxIndex, $idx := .SecondaryIndexes}}
 		// Cleanup {{joinFieldNames $idx.Fields}} index
-		indexKey {{if eq $idxIndex 0 }}:{{end}}= store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{
+		indexKey {{if eq $idxIndex 0 }}:{{end}}= store.index{{joinFieldNames $idx.Fields}}.Pack(tuple.Tuple{
 				{{range $i, $f := $idx.Fields}} entity.{{ $f.Name }}, {{end}}
 				{{if not $idx.Unique }}{{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}{{end}}
 		})
@@ -331,7 +341,7 @@ func (store *{{.Name}}Store) Delete(ctx context.Context, tr fdb.Transaction, {{r
 {{ end }}
 func (store *{{$.Name}}Store) GetManyBy{{joinFieldNames $idx.Fields}}(ctx context.Context, tr fdb.ReadTransaction, {{range $i, $f := $idx.Fields}}{{if $i}}, {{end}}{{$f.Name}} {{$f.Type}}{{end}}) ([]*{{$.Name}}, error) {
 		entities := []*{{$.Name}}{}
-		indexKeyPrefix := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{ {{range $i, $f := $idx.Fields}} {{$f.Name}}, {{end}} })
+		indexKeyPrefix := store.index{{joinFieldNames $idx.Fields}}.Pack(tuple.Tuple{ {{range $i, $f := $idx.Fields}} {{$f.Name}}, {{end}} })
 		indexRange, err := fdb.PrefixRange(indexKeyPrefix)
 		if err != nil {
 			return nil, err
@@ -343,7 +353,7 @@ func (store *{{$.Name}}Store) GetManyBy{{joinFieldNames $idx.Fields}}(ctx contex
 		}
 
 		for _, kv := range kvs {
-				indexTuple, err := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Unpack(kv.Key)
+				indexTuple, err := store.index{{joinFieldNames $idx.Fields}}.Unpack(kv.Key)
 				if err != nil {
 						return nil, err
 				}
@@ -379,7 +389,7 @@ func (store *{{$.Name}}Store) GetManyBy{{joinFieldNames $idx.Fields}}(ctx contex
 {{ continue }}
 {{ end }}
 func (store *{{$.Name}}Store) GetBy{{joinFieldNames $idx.Fields}}(ctx context.Context, tr fdb.ReadTransaction, {{range $i, $f := $idx.Fields}}{{if $i}}, {{end}}{{$f.Name}} {{$f.Type}}{{end}}) (*{{$.Name}}, error) {
-		key := store.dir.Sub("{{joinFieldNames $idx.Fields}}_index").Pack(tuple.Tuple{ {{range $i, $f := $idx.Fields}} {{$f.Name}}, {{end}} })
+		key := store.index{{joinFieldNames $idx.Fields}}.Pack(tuple.Tuple{ {{range $i, $f := $idx.Fields}} {{$f.Name}}, {{end}} })
 
 		pk, err := tr.Get(key).Get()
 		if err != nil {
