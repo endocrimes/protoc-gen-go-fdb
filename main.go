@@ -61,7 +61,6 @@ func main() {
 		// Generate code for each message
 		tmpl := template.Must(template.New("fdb").Funcs(template.FuncMap{
 			"joinFieldNames": joinFieldNames,
-			"join":           strings.Join,
 		}).Parse(fdbTemplate))
 
 		for _, msg := range messages {
@@ -288,13 +287,48 @@ func (store *{{.Name}}Store) Set(ctx context.Context, tr fdb.Transaction, entity
 				return err
 		}
 
-		{{range $idxIndex, $idx := .SecondaryIndexes}}
-		// Setup {{joinFieldNames $idx.Fields}} index
-		indexKey {{if eq $idxIndex 0}}:{{end}}= store.index{{joinFieldNames $idx.Fields}}.Pack(tuple.Tuple{
-				{{range $i, $f := $idx.Fields}} entity.{{ $f.Name }}, {{end}}
-				{{if not $idx.Unique}}{{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}{{end}}
-		})
-		{{if $idx.Unique}}tr.Set(indexKey, key){{else}}tr.Set(indexKey, []byte{}){{end}}
+		{{if .SecondaryIndexes}}
+		// Read the existing value to determine if we need to update the secondary indexes
+		existingValue, err := tr.Get(key).Get()
+		if err != nil {
+				return err
+		}
+
+		var existingEntity *{{.Name}}
+		if existingValue != nil {
+			existingEntity = &{{.Name}}{}
+			err = proto.Unmarshal(existingValue, existingEntity)
+			if err != nil {
+				return err
+			}
+		}
+
+		{{range $i, $secondaryIndex := .SecondaryIndexes}}
+		// Check if {{joinFieldNames $secondaryIndex.Fields}} index needs to be updated
+		if existingEntity != nil {
+			{{- $length := len $secondaryIndex.Fields -}}
+			if {{ range $i, $f := $secondaryIndex.Fields }} {{ if gt $i 0 }} || {{ end }} existingEntity.{{$f.Name}} != entity.{{$f.Name}} {{end}} {
+				// Cleanup the old index
+				oldkey := store.index{{joinFieldNames $secondaryIndex.Fields}}.Pack(tuple.Tuple{
+				{{range $i, $f := $secondaryIndex.Fields}} existingEntity.{{ $f.Name }}, {{end}}
+				{{if not $secondaryIndex.Unique}}{{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}{{end}}
+				})
+				tr.Clear(oldkey)
+				// Set new Index value
+				indexKey := store.index{{joinFieldNames $secondaryIndex.Fields}}.Pack(tuple.Tuple{
+				{{range $i, $f := $secondaryIndex.Fields}} entity.{{ $f.Name }}, {{end}}
+				{{if not $secondaryIndex.Unique}}{{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}{{end}}
+				})
+			{{if $secondaryIndex.Unique}}tr.Set(indexKey, key){{else}}tr.Set(indexKey, []byte{}){{end}}
+			}
+		} else {
+		 	indexKey := store.index{{joinFieldNames $secondaryIndex.Fields}}.Pack(tuple.Tuple{
+				{{range $i, $f := $secondaryIndex.Fields}} entity.{{ $f.Name }}, {{end}}
+				{{if not $secondaryIndex.Unique}}{{range $.PrimaryKeyFields}} entity.{{.Name}}, {{end}}{{end}}
+				})
+			{{if $secondaryIndex.Unique}}tr.Set(indexKey, key){{else}}tr.Set(indexKey, []byte{}){{end}}
+		}
+		{{end}}
 
 		{{end}}
 
