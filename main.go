@@ -234,7 +234,7 @@ func New{{.Name}}Store(db fdb.Database) (*{{.Name}}Store, error) {
 		if err != nil {
 				return nil, err
 		}
-		{{range $idxIndex, $idx := .SecondaryIndexes}}	
+		{{range $idxIndex, $idx := .SecondaryIndexes}}
 		index{{joinFieldNames $idx.Fields}}, err := dir.CreateOrOpen(db, []string{"index" {{range $i, $k := $idx.Fields}} ,"{{$k.Name}}"{{end}} }, nil)
 		if err != nil {
 				return nil, err
